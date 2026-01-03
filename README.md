@@ -1,6 +1,8 @@
-🏨 Hotel Booking Management System:
+🏨 Hotel Booking Management System
+
 A complete hotel booking platform with authentication, room inventory, secure payments, and admin management — built using Spring Boot, JWT Security, Stripe Payments, and PostgreSQL.
-Designed to behave like a real-world production system: clean layered architecture, validation, webhooks, and booking workflows.
+
+Designed to behave like a real-world production system with layered architecture, validation, webhooks, and booking workflows.
 
 🚀 Features:
 👤 User
