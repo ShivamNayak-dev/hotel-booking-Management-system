@@ -50,4 +50,41 @@ Designed to behave like a **real-world production system** with layered architec
 ---
 
 ## 🏗 Architecture
+Client → Controller → Service → Repository → Database
+|
+└── Payment Gateway (Stripe)
+
+### 🔐 Auth
+POST /auth/signup
+POST /auth/login
+POST /auth/refresh
+
+### 🛒 Booking
+POST /bookings/init
+POST /bookings/{id}/payments
+GET /bookings/{id}/status
+POST /bookings/{id}/cancel
+
+### 🏨 Hotels
+GET /hotels/search
+GET /hotels/{id}/info
+
+### 🛠 Admin
+/admin/hotels/**
+/admin/rooms/**
+/admin/inventory/**
+
+👉 Full API details are inside the controller files.
+
+---
+
+## ⚙️ Environment Variables
+
+Secrets should NOT be stored in source code.
+
+## ▶️ How to Run (development)
+
+1️⃣ Start PostgreSQL and create DB:
+
+2️⃣ Run backend:
 
