@@ -88,3 +88,25 @@ Secrets should NOT be stored in source code.
 
 2️⃣ Run backend:
 
+mvn spring-boot:run
+
+
+API base URL:
+
+## 🧭 Future Enhancements
+
+- Docker support  
+- Email booking notifications  
+- Admin dashboard UI  
+- Caching for hotel search  
+- Load testing & metrics  
+
+---
+
+## 📌 Notes
+
+This project focuses on **backend implementation only**.  
+Frontend can be added as a separate service later.
+
+
+
