@@ -35,9 +35,7 @@ Built using **Spring Boot, PostgreSQL, Stripe, and Spring Security** — designe
 
 ## 📸 Architecture Overview
 
-> (Replace with your diagram if available)
 
-![Architecture](docs/images/architecture.png)
 
 ```
 Client → API → Controller → Service → Repository → PostgreSQL
