@@ -98,7 +98,7 @@ Client → API → Controller → Service → Repository → PostgreSQL
 
 ## 🧠 Booking Flow (End-to-End)
 
-![Booking Flow](docs/images/booking-flow.png)
+
 
 1️⃣ User selects hotel + rooms  
 2️⃣ System checks and locks availability  
@@ -111,22 +111,6 @@ Client → API → Controller → Service → Repository → PostgreSQL
 
 ---
 
-## ⚙️ Environment Variables
-
-Create `.env` or configure host:
-
-```
-DB_URL=jdbc:postgresql://localhost:5432/airbnb
-DB_USERNAME=postgres
-DB_PASSWORD=your_password
-
-JWT_SECRET=your_jwt_secret
-
-STRIPE_SECRET=sk_test_xxx
-STRIPE_WEBHOOK_SECRET=whsec_xxx
-```
-
-> 🚫 **Never commit secrets to GitHub.**
 
 ---
 
