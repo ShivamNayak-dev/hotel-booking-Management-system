@@ -1,279 +1,331 @@
-# 🏨 Hotel Booking Management System
+# ⚡ HotelCore — Concurrent Hotel Booking Engine
 
-A backend system that simulates how real hotel booking platforms (like OYO, Booking.com, Airbnb) work —  
-from hotel management and room availability to secure payments and booking workflows.
-
-This project focuses on **backend architecture**, not UI.  
-It is designed as a **production-ready system**:
-
-- users can search hotels, check availability, and book rooms  
-- admins can manage hotels, rooms, and inventory  
-- payments are processed securely through Stripe  
-- bookings are confirmed only after verified payment  
-- concurrency is controlled so two people cannot book the same room
-
-It demonstrates real concepts used in industry — authentication, transactions, webhooks, validation,
-and layered architecture — instead of just CRUD APIs.
+> A **high-concurrency hotel booking engine** built with Java Spring Boot — engineered to handle real-world problems like race conditions in inventory reservation, fraud-safe payment confirmation, and a multi-layered dynamic pricing pipeline using the Decorator design pattern.
+>
+> Not a tutorial project. Built to solve the same engineering challenges that power **Booking.com, OYO, and Airbnb** at scale.
 
 ---
 
+## 🚀 Why This Project Stands Out
 
+Most backend projects are simple CRUD apps. This one solves **real engineering problems**:
 
-A **production-style hotel booking backend** with:
-
-- Secure JWT authentication  
-- Real-time room availability & inventory
-- Dynamic pricing behavior  
-- Safe booking workflows  
-- Stripe payment integration (with webhooks)  
-- Admin hotel/room management  
-- Transactional concurrency control (prevents double booking)
-
-Built using **Spring Boot, PostgreSQL, Stripe, and Spring Security** — designed like a real SaaS backend.
+| Problem | Solution Used |
+|---|---|
+| Two users booking the same room simultaneously | Pessimistic Locking (`PESSIMISTIC_WRITE`) |
+| Prices should change based on demand & season | Decorator Pattern — 4-layer pricing pipeline |
+| Expensive search queries on large inventory | `HotelMinPrice` materialized summary table |
+| Booking confirmed only after payment, never before | Stripe webhook — server-side confirmation only |
+| JWT exceptions bypass `@ControllerAdvice` | `HandlerExceptionResolver` injected into filter |
+| Stale prices across 1000s of rooms | Hourly `@Scheduled` batch pricing update job |
 
 ---
 
-## 📸 Architecture Overview
-
-
+## 🏗️ Architecture
 
 ```
-Client → API → Controller → Service → Repository → PostgreSQL
-                              │
-                              └── Stripe (Checkout + Webhooks)
+Client Request
+      │
+      ▼
+  JWT Auth Filter  ──── validates token, injects User into SecurityContext
+      │
+      ▼
+  Controller Layer  ──── REST endpoints (8 controllers, 26 APIs)
+      │
+      ▼
+  Service Layer  ──── business logic, transactions, pricing
+      │         │
+      │         └──── PricingService (Decorator Chain)
+      │                   Base → Surge → Occupancy → Urgency → Holiday
+      ▼
+  Repository Layer  ──── JPA + custom JPQL queries, pessimistic locks
+      │
+      ▼
+  PostgreSQL  ──── 8 entities, unique constraints, inventory tables
+      │
+  Stripe API  ──── Checkout session + Webhook + Refund
 ```
 
 ---
 
-## ✨ Features
+## ✨ Key Features
 
-### 👤 User Features
-- Register & Login (JWT)
-- Browse hotels & available rooms
-- Add guest details
-- Create bookings
-- Secure Stripe payments
-- View booking history
-- Cancel bookings
+### 👤 User-Facing
+- Signup / Login with **JWT** (access token: 10 min, refresh token: 6 months via `HttpOnly` cookie)
+- Search hotels by **city and date range** — paginated results with dynamic pricing
+- View detailed hotel info with **room-wise availability and pricing**
+- Complete **3-step booking flow**: Reserve → Add Guests → Pay
+- Secure Stripe Checkout — booking confirmed only via **server-side webhook**
+- Cancel booking with **automatic Stripe refund**
+- View booking history and manage guest profiles
 
----
+### 🏨 Hotel Manager (Admin)
+- Create and manage hotels, rooms, and pricing
+- Activate hotels (auto-generates 365-day inventory)
+- Manage room inventory per date range (open/close/surge)
+- View all bookings and generate **revenue reports** with date filters
 
-### 🏨 Admin Features
-- Create & manage hotels
-- Define rooms & pricing
-- Manage room inventory (per date)
-- Track and manage bookings
-
----
-
-### 💳 Payments
-- Stripe Checkout integration
-- Payment verification via webhook
-- Confirm booking **only after successful payment**
-- Safe handling of failed payments  
-- Refund-ready design
-
-> Booking is NEVER confirmed from frontend — **only webhook** confirms it.  
-> Prevents tampering & fraud.
-
----
-
-### 🔒 Security
-- JWT authentication
-- Role-based access control
-- Validation on all inputs
-- Secrets stored via environment variables
-- Restricted admin APIs
+### 💳 Payment Flow (Fraud-Safe)
+```
+User clicks Pay
+     │
+     ▼
+POST /bookings/{id}/payments  ──── creates Stripe Checkout session
+     │
+     ▼
+User completes payment on Stripe
+     │
+     ▼
+Stripe → POST /webhook/payment  ──── validates Stripe-Signature header
+     │
+     ▼
+Booking status → CONFIRMED  ──── only server can confirm, never frontend
+```
+> ⚠️ Booking is **NEVER confirmed from the frontend**. Only the verified Stripe webhook confirms it. This prevents payment fraud and tampering.
 
 ---
 
-## 🛠 Tech Stack
+## 🧠 Engineering Deep Dive
 
-**Backend:** Spring Boot 3, Spring Security, Hibernate/JPA  
-**Database:** PostgreSQL  
-**Payments:** Stripe API + Webhooks  
-**Other:** Lombok, Maven, Validation API
+### 1. Decorator Pattern — Dynamic Pricing Pipeline
+Prices are not static. Every room's price is calculated by chaining 4 strategies:
+
+```java
+PricingStrategy chain = new BasePricingStrategy();
+chain = new SurgePricingStrategy(chain);       // admin-controlled surge multiplier
+chain = new OccupancyPricingStrategy(chain);   // +20% if occupancy > 80%
+chain = new UrgencyPricingStrategy(chain);     // +15% if booking within 7 days
+chain = new HolidayPricingStrategy(chain);     // +25% on holidays
+```
+Each strategy **wraps the previous one** (Decorator Pattern). Adding a new pricing rule requires zero changes to existing code (Open/Closed Principle).
+
+### 2. Pessimistic Locking — Preventing Double Booking
+When two users try to book the same room at the same time, only one wins:
+
+```java
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+List<Inventory> findAndLockAvailableInventory(roomId, startDate, endDate, roomsCount);
+```
+The database row is locked for the duration of the transaction. The second request waits, then finds zero availability and fails gracefully.
+
+### 3. HotelMinPrice — Search Performance Optimization
+Searching "hotels in Delhi from Dec 1–5" across millions of inventory rows would be slow. Instead:
+- A separate `HotelMinPrice` table stores the **cheapest price per hotel per day**
+- Search queries run on this **lightweight summary table** — not the full inventory
+- This table is refreshed every hour by a scheduled batch job
+
+### 4. Hourly Batch Pricing Scheduler
+```java
+@Scheduled(cron = "0 0 * * * *")  // every hour
+public void updatePrices() {
+    // Fetch hotels in pages of 100 (batch processing)
+    // Recalculate dynamic prices for all rooms
+    // Rebuild HotelMinPrice summary table in bulk
+}
+```
+Processes hotels in **batches of 100** using pagination to avoid memory issues.
+
+### 5. JWT Exception Handling in Security Filter
+JWT validation errors occur **inside the filter**, before `@RestControllerAdvice` can handle them. Standard Spring would return an unformatted error. Fix:
+
+```java
+// Inject HandlerExceptionResolver into the JWT filter
+handlerExceptionResolver.resolveException(request, response, null, jwtException);
+```
+This routes the exception through the normal exception handler, returning a clean JSON error response.
 
 ---
 
-## 🧠 Booking Flow (End-to-End)
+## 📡 Complete API Reference
 
+### 🔐 Auth (3 APIs)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/auth/signup` | Register new user |
+| POST | `/auth/login` | Login — returns JWT + refresh token cookie |
+| POST | `/auth/refresh` | Get new access token using refresh token cookie |
 
+### 🏨 Browse Hotels — Public (2 APIs)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/hotels/search` | Search hotels by city, dates, rooms (paginated) |
+| GET | `/hotels/{id}/info` | Get hotel details with room pricing |
 
-1️⃣ User selects hotel + rooms  
-2️⃣ System checks and locks availability  
-3️⃣ Booking saved as **PENDING**  
-4️⃣ Stripe payment session generated  
-5️⃣ User completes payment  
-6️⃣ Stripe sends webhook  
-7️⃣ Booking becomes **CONFIRMED**  
-8️⃣ Failed payment → booking cancelled safely
+### 📅 Booking Flow (5 APIs)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/bookings/init` | Initialize booking — reserves inventory |
+| POST | `/bookings/{id}/addGuests` | Add guest details to booking |
+| POST | `/bookings/{id}/payments` | Create Stripe checkout session |
+| POST | `/bookings/{id}/cancel` | Cancel booking + trigger Stripe refund |
+| GET | `/bookings/{id}/status` | Check current booking status |
+
+### 👤 User Profile (6 APIs)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/users/profile` | Get my profile |
+| PATCH | `/users/profile` | Update profile |
+| GET | `/users/myBookings` | Get all my bookings |
+| GET | `/users/guests` | Get saved guest profiles |
+| POST | `/users/guests` | Add new guest profile |
+| PUT | `/users/guests/{id}` | Update guest profile |
+| DELETE | `/users/guests/{id}` | Remove guest profile |
+
+### 🏗️ Admin — Hotels (6 APIs)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/admin/hotels` | Create new hotel |
+| GET | `/admin/hotels` | Get all my hotels |
+| GET | `/admin/hotels/{id}` | Get hotel by ID |
+| PUT | `/admin/hotels/{id}` | Update hotel |
+| DELETE | `/admin/hotels/{id}` | Delete hotel |
+| PATCH | `/admin/hotels/{id}/activate` | Activate hotel (creates 365-day inventory) |
+| GET | `/admin/hotels/{id}/bookings` | Get all bookings for a hotel |
+| GET | `/admin/hotels/{id}/reports` | Revenue report with date filters |
+
+### 🛏️ Admin — Rooms (5 APIs)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/admin/hotels/{id}/rooms` | Add room to hotel |
+| GET | `/admin/hotels/{id}/rooms` | List all rooms |
+| GET | `/admin/hotels/{id}/rooms/{roomId}` | Get room by ID |
+| PUT | `/admin/hotels/{id}/rooms/{roomId}` | Update room |
+| DELETE | `/admin/hotels/{id}/rooms/{roomId}` | Delete room |
+
+### 📦 Admin — Inventory (2 APIs)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/admin/inventory/rooms/{id}` | Get inventory by room |
+| PATCH | `/admin/inventory/rooms/{id}` | Update inventory (surge, open/close dates) |
+
+### 💳 Webhook (1 API)
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/webhook/payment` | Stripe webhook — confirms or cancels booking |
+
+**Total: 26 REST APIs**
 
 ---
 
+## 🗄️ Database Design
+
+```
+app_user          ← User accounts, roles (GUEST / HOTEL_MANAGER)
+hotel             ← Hotel info, owner, city, amenities
+room              ← Room type, base price, capacity
+inventory         ← Availability per room per date (with surge factor)
+hotel_min_price   ← Cheapest price per hotel per day (search optimization)
+booking           ← Booking records with status lifecycle
+guest             ← Saved guest profiles
+booking_guest     ← Many-to-many: bookings ↔ guests
+```
+
+**Booking Status Lifecycle:**
+```
+RESERVED → GUESTS_ADDED → PAYMENTS_PENDING → CONFIRMED
+                                           └──→ CANCELLED
+```
 
 ---
 
-## ▶️ Local Setup (Development)
+## 🛠️ Tech Stack
 
-### 1️⃣ Clone the project
+| Category | Technology |
+|---|---|
+| Language | Java 17 |
+| Framework | Spring Boot 3 |
+| Security | Spring Security + JWT (JJWT) |
+| Database | PostgreSQL |
+| ORM | Spring Data JPA / Hibernate |
+| Payments | Stripe API (Checkout + Webhooks + Refunds) |
+| API Docs | Swagger / OpenAPI (`@Operation` annotations) |
+| Mapping | ModelMapper |
+| Build | Maven |
+| Utils | Lombok |
+
+---
+
+## ⚙️ Local Setup
+
+### Prerequisites
+- Java 17+
+- PostgreSQL
+- Maven
+- Stripe account (for payment testing)
+
+### Steps
+
+**1. Clone the repository**
 ```bash
-git clone https://github.com/<your-username>/hotel-booking-Management-system.git
-cd hotel-booking-Management-system
+git clone https://github.com/ShivamNayak-dev/airBnbApp.git
+cd airBnbApp
 ```
 
-### 2️⃣ Create PostgreSQL database
+**2. Create PostgreSQL database**
 ```sql
-CREATE DATABASE airbnb;
+CREATE DATABASE airbnb_db;
 ```
 
-### 3️⃣ Run backend
+**3. Configure environment variables**  
+Create `src/main/resources/application.properties` or set environment variables:
+```properties
+spring.datasource.url=jdbc:postgresql://localhost:5432/airbnb_db
+spring.datasource.username=your_db_username
+spring.datasource.password=your_db_password
+
+jwt.secretKey=your_jwt_secret_key_min_32_characters
+
+stripe.secret.key=sk_test_your_stripe_secret_key
+stripe.webhook.secret=whsec_your_webhook_secret
+
+frontend.url=http://localhost:3000
+```
+
+**4. Run the application**
 ```bash
 mvn spring-boot:run
 ```
 
-API base URL:
-
+**5. Access Swagger UI**
 ```
-http://localhost:8080/api/v1
-```
-
----
-
-## 📡 API Overview (High Level)
-
-### 🔐 Auth
-```
-POST /auth/signup
-POST /auth/login
-GET  /auth/me
-```
-
-### 🏨 Hotels
-```
-GET /hotels/search
-GET /hotels/{id}
-```
-
-### 🛒 Bookings
-```
-POST /bookings/init
-POST /bookings/{id}/payments
-GET  /bookings/{id}/status
-POST /bookings/{id}/cancel
-```
-
-### 🛠 Admin APIs
-```
-/admin/hotels/**
-/admin/rooms/**
-/admin/inventory/**
-```
-
-👉 Full details available inside controller classes.
-
----
-
-## 🏗 Project Structure
-
-```text
-src/
- ├── controller/        # REST endpoints
- ├── service/           # Business logic
- ├── repository/        # Data persistence layer
- ├── dto/               # Request/response models
- ├── entity/            # JPA entity classes
- ├── security/          # JWT & auth filters
- ├── config/            # Application configuration
- └── exception/         # Global exception handling
+http://localhost:8080/swagger-ui.html
 ```
 
 ---
 
-## 🧠 Key Engineering Concepts
-
-### 🔁 Concurrency Control
-Prevents multiple users from booking same room:
-
-- transactions
-- optimistic validation
-- rollback on failure
-
-> Only one booking succeeds — others safely fail.
-
----
-
-### 💲 Dynamic Pricing Behavior
-Displayed prices adjust based on:
-
-- remaining room categories
-- inventory availability
-- admin price adjustments
-
-Uses cached **HotelMinPrice** to avoid expensive queries.
-
----
-
-### 🧯 Global Error Handling
-Centralized handler returns clean responses like:
+## 📁 Project Structure
 
 ```
-400 Bad Request
-401 Unauthorized
-404 Not Found
-409 Conflict
-500 Internal Server Error
+src/main/java/com/codingshuttle/projects/airBnbApp/
+├── controller/        # 8 REST controllers — 26 APIs
+├── service/           # Business logic + PricingUpdateService (scheduler)
+├── strategy/          # Pricing strategies (Decorator Pattern)
+├── repository/        # JPA repositories + custom JPQL queries
+├── entity/            # 8 JPA entities + 4 enums
+├── dto/               # Request/Response DTOs
+├── security/          # JWT filter, JWT service, WebSecurityConfig
+├── config/            # CORS, Stripe, ModelMapper config
+├── advice/            # Global exception handler + response wrapper
+└── exception/         # Custom exception classes
 ```
 
 ---
 
-## 🚀 Deployment
+## 🔮 Planned Improvements
 
-Supports deployment to:
-
-- Render
-- Railway
-- AWS
-- Docker (planned)
-
-Make sure to configure environment variables.
+- [ ] Scheduled job to auto-release expired bookings (currently manual check only)
+- [ ] Real holiday detection API for `HolidayPricingStrategy`
+- [ ] Unit and integration tests (JUnit 5 + Mockito)
+- [ ] Docker + Docker Compose setup
+- [ ] Redis caching for search results
+- [ ] Email notifications on booking confirmation/cancellation
 
 ---
 
-## 🧭 Future Enhancements
+## 📄 License
 
-- Docker & CI/CD
-- Email/SMS booking notifications
-- Full Admin dashboard UI
-- Redis caching for search
-- Automatic refunds
-- Performance metrics & monitoring
+MIT License — free to use, modify, and distribute.
 
 ---
 
-## 📌 Notes
-
-- This repository contains **backend only**
-- Frontend can be developed independently and integrated via APIs
-
----
-
-## 🤝 Contributing
-
-1️⃣ Fork this repo  
-2️⃣ Create feature branch  
-3️⃣ Submit PR  
-
----
-
-## 📜 License
-
-MIT — free to use and modify.
-
----
-
-## 🙏 Acknowledgements
-
-Inspired by real hotel booking platforms & payment integrations.  
-Thanks to Stripe, Spring & PostgreSQL communities.
-
+*Built by [Shivam Nayak](https://github.com/ShivamNayak-dev) | [LinkedIn](https://linkedin.com/in/your-linkedin)*
